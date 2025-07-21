@@ -1,207 +1,87 @@
-  /**
-     * Save push-notification data
-     *
-     * @param notificationRequest Instance of NotificationRequest
-     * @return Instance of NotificationResponse
-     * @throws NotificationServiceException NotificationServiceException
-     */
-    private NotificationResponse savePushNotificationData(NotificationRequest notificationRequest) throws NotificationServiceException {
-        NotificationResponse notificationResponse = new NotificationResponse();
-        String commAuthTokenRequest = notificationRequest.getCommAuthToken();
-        if (StringUtils.isBlank(commAuthTokenRequest)) {
-            notificationResponse.setNotificationDataResponse(prepareNotificationFailedResponse("NoCommAuthToken"));
-            return notificationResponse;
-        }
+/**
 
-        String mobileContextRequest = notificationRequest.getMobileContext();
-        if (StringUtils.isBlank(mobileContextRequest)) {
-            notificationResponse.setNotificationDataResponse(prepareNotificationFailedResponse("InvalidRequest"));
-            return notificationResponse;
-        }
+Save push-notification data */ private NotificationResponse savePushNotificationData(NotificationRequest notificationRequest) throws NotificationServiceException { NotificationResponse notificationResponse = new NotificationResponse(); String commAuthTokenRequest = notificationRequest.getCommAuthToken(); if (StringUtils.isBlank(commAuthTokenRequest)) { notificationResponse.setNotificationDataResponse(prepareNotificationFailedResponse("NoCommAuthToken")); return notificationResponse; }
 
-        Redirection contextDetails = redirectionDao.findByContext(mobileContextRequest);
-        if (StringUtils.isBlank(contextDetails.getContext())) {
-            notificationResponse.setNotificationDataResponse(prepareNotificationFailedResponse("NoContextAvailable"));
-        } else {
-            String commAuthTokenDB = contextDetails.getToken();
+String mobileContextRequest = notificationRequest.getMobileContext(); if (StringUtils.isBlank(mobileContextRequest)) { notificationResponse.setNotificationDataResponse(prepareNotificationFailedResponse("InvalidRequest")); return notificationResponse; }
 
-            // Validate comm auth token
-            if (commAuthTokenRequest.equals(commAuthTokenDB)) {
-                List<NotificationData> lstNotificationData = notificationRequest.getNotificationData();
-                if (CollectionUtil.isListNonEmpty(lstNotificationData)) {
-                    List<Integer> lstFailedUid = insertNotificationDetails(lstNotificationData, mobileContextRequest, notificationRequest);
-                    notificationResponse.setNotificationDataResponse(prepareNotificationSuccessResponse(lstFailedUid));
-                } else {
-                    notificationResponse.setNotificationDataResponse(prepareNotificationFailedResponse("NoDataAvailable"));
-                }
-            } else {
-                notificationResponse.setNotificationDataResponse(prepareNotificationFailedResponse("InvalidCommAuthToken"));
-            }
-        }
-        return notificationResponse;
+Redirection contextDetails = redirectionDao.findByContext(mobileContextRequest); if (StringUtils.isBlank(contextDetails.getContext())) { notificationResponse.setNotificationDataResponse(prepareNotificationFailedResponse("NoContextAvailable")); } else { String commAuthTokenDB = contextDetails.getToken();
+
+if (commAuthTokenRequest.equals(commAuthTokenDB)) {
+     List<NotificationData> lstNotificationData = notificationRequest.getNotificationData();
+     if (CollectionUtil.isListNonEmpty(lstNotificationData)) {
+         List<Integer> lstFailedUid = insertNotificationDetails(lstNotificationData, mobileContextRequest, notificationRequest);
+         notificationResponse.setNotificationDataResponse(prepareNotificationSuccessResponse(lstFailedUid));
+     } else {
+         notificationResponse.setNotificationDataResponse(prepareNotificationFailedResponse("NoDataAvailable"));
+     }
+ } else {
+     notificationResponse.setNotificationDataResponse(prepareNotificationFailedResponse("InvalidCommAuthToken"));
+ }
+
+} return notificationResponse; }
+
+
+private List<Integer> insertNotificationDetails(List<NotificationData> lstNotificationData, String mobileContextRequest, NotificationRequest notificationRequest) { List<Integer> lstFailedUid = new ArrayList<>(); int batchSize = notificationDataDao.getBatchSize();
+
+List<PushNotificationData> pushNotificationDataList = new ArrayList<>(batchSize);
+List<DeviceDetails> deviceDetailsList = new ArrayList<>(batchSize);
+List<Integer> uidList = new ArrayList<>(batchSize);
+
+for (NotificationData notificationData : lstNotificationData) {
+    pushNotificationDataList.add(preparePushNotificationData(mobileContextRequest, notificationData, notificationRequest));
+    deviceDetailsList.add(prepareDeviceDetails(mobileContextRequest, notificationData));
+    uidList.add(Integer.parseInt(notificationData.getUid()));
+
+    if (pushNotificationDataList.size() >= batchSize) {
+        processBatchWithEntityManager(pushNotificationDataList, deviceDetailsList, uidList, lstFailedUid);
+        pushNotificationDataList.clear();
+        deviceDetailsList.clear();
+        uidList.clear();
     }
+}
+if (!pushNotificationDataList.isEmpty()) {
+    processBatchWithEntityManager(pushNotificationDataList, deviceDetailsList, uidList, lstFailedUid);
+}
+return lstFailedUid;
 
-    /**
-     * Insert notification details.
-     *
-     * @param lstNotificationData  Instance of List
-     * @param mobileContextRequest String value contains context-name
-     * @param notificationRequest  Instance of NotificationRequest
-     * @return Instance of List
-     */
-    private List<Integer> insertNotificationDetails(List<NotificationData> lstNotificationData, String mobileContextRequest, NotificationRequest notificationRequest) {
-        List<Integer> lstFailedUid = new ArrayList<>();
-        int batchSize = notificationDataDao.getBatchSize();
+}
 
-        List<PushNotificationData> pushNotificationDataList = new ArrayList<>(batchSize);
-        List<DeviceDetails> deviceDetailsList = new ArrayList<>(batchSize);
-        List<Integer> uidList = new ArrayList<>(batchSize);
+@Transactional private void processBatchWithEntityManager(List<PushNotificationData> pushNotificationDataList, List<DeviceDetails> deviceDetailsList, List<Integer> uidList, List<Integer> lstFailedUid) { final int BATCH_SIZE = 50;
 
-        for (NotificationData notificationData : lstNotificationData) {
-            pushNotificationDataList.add(preparePushNotificationData(mobileContextRequest, notificationData, notificationRequest));
-            deviceDetailsList.add(prepareDeviceDetails(mobileContextRequest, notificationData));
-            uidList.add(Integer.parseInt(notificationData.getUid()));
-
-            if (pushNotificationDataList.size() >= batchSize) {
-                processBatch(pushNotificationDataList, deviceDetailsList, uidList, lstFailedUid);
-                pushNotificationDataList.clear();
-                deviceDetailsList.clear();
-                uidList.clear();
-            }
+// Process PushNotificationData
+for (int i = 0; i < pushNotificationDataList.size(); i++) {
+    try {
+        entityManager.persist(pushNotificationDataList.get(i));
+        if ((i + 1) % BATCH_SIZE == 0) {
+            entityManager.flush();
+            entityManager.clear();
         }
-        if (!pushNotificationDataList.isEmpty()) {
-            processBatch(pushNotificationDataList, deviceDetailsList, uidList, lstFailedUid);
+    } catch (Exception ex) {
+        lstFailedUid.add(uidList.get(i));
+        logger.error("Failed to persist PushNotificationData for UID: {}", uidList.get(i), ex);
+    }
+}
+entityManager.flush();
+entityManager.clear();
+
+// Process DeviceDetails
+for (int i = 0; i < deviceDetailsList.size(); i++) {
+    try {
+        entityManager.persist(deviceDetailsList.get(i));
+        if ((i + 1) % BATCH_SIZE == 0) {
+            entityManager.flush();
+            entityManager.clear();
         }
-        return lstFailedUid;
+    } catch (Exception ex) {
+        logger.error("Failed to persist DeviceDetails for UID: {}", deviceDetailsList.get(i).getUid(), ex);
     }
+}
+entityManager.flush();
+entityManager.clear();
 
-    /**
-     * Process a batch of notification data and device details.
-     * @param pushNotificationDataList List of PushNotificationData to be saved
-     * @param deviceDetailsList List of DeviceDetails to be saved
-     * @param uidList List of UIDs for error handling
-     * @param lstFailedUid List to collect failed UIDs
-     */
-    private void processBatch(List<PushNotificationData> pushNotificationDataList,
-                              List<DeviceDetails> deviceDetailsList,
-                              List<Integer> uidList,
-                              List<Integer> lstFailedUid) {
-        // Process push notifications
-        processNotificationBatch(pushNotificationDataList, uidList, lstFailedUid);
+}
 
-        // Process device details
-        processDeviceDetailsBatch(deviceDetailsList);
-    }
+private PushNotificationData preparePushNotificationData(String context, NotificationData notificationData, NotificationRequest notificationRequest) { PushNotificationData pushNotificationData = new PushNotificationData(); pushNotificationData.setUid(Integer.parseInt(notificationData.getUid())); pushNotificationData.setContext(context); pushNotificationData.setMessageCount(Integer.parseInt(notificationData.getMessageCount())); pushNotificationData.setMessageType(notificationData.getMessageType()); pushNotificationData.setCreatedTsUTC(DateUtil.getCurrentDateTimeInUTC(DateUtil.MYSQL_DATE_TIME_FORMAT)); pushNotificationData.setPracticeIp(StringUtils.trimToEmpty(notificationRequest.getHostAddress())); pushNotificationData.setHostName(StringUtils.trimToEmpty(notificationRequest.getHostName())); pushNotificationData.setTomcatPath(StringUtils.trimToEmpty(notificationRequest.getTomcatHome())); return pushNotificationData; }
 
-    private void processNotificationBatch(List<PushNotificationData> notifications, List<Integer> uidList, List<Integer> lstFailedUid) {
-        try {
-            List<PushNotificationData> saved = notificationDataDao.savePushNotificationDataBatch(notifications);
-            if (saved.size() == notifications.size()) {
-                return;
-            }
-            logger.error("Batch save incomplete: Expected {}, Actual {}",
-                    notifications.size(), saved.size());
-        } catch (RuntimeException e) {
-            logger.error("Batch save failed", e);
-        }
+private DeviceDetails prepareDeviceDetails(String context, NotificationData notificationData) { DeviceDetails deviceDetails = deviceDetailsDao.findByUidAndContext(Integer.parseInt(notificationData.getUid()), context); if (StringUtils.isBlank(deviceDetails.getContext())) { deviceDetails.setUid(Integer.parseInt(notificationData.getUid())); deviceDetails.setContext(context); } deviceDetails.setDevicePlatform(notificationData.getDevicePlatform()); deviceDetails.setDeviceToken(notificationData.getDeviceToken()); return deviceDetails; }
 
-        // Fallback to individual processing
-        logger.info("Processing notifications individually");
-        for (int notification = 0; notification < notifications.size(); notification++) {
-            processIndividualNotification(notifications.get(notification), uidList.get(notification), lstFailedUid);
-        }
-    }
-
-    private void processIndividualNotification(PushNotificationData notification, int uid, List<Integer> lstFailedUid) {
-        try {
-            if (notificationDataDao.savePushNotificationData(notification) == null) {
-                lstFailedUid.add(uid);
-            }
-        } catch (RuntimeException ex) {
-            logger.error("Failed to save notification for uid: {}", uid, ex);
-            lstFailedUid.add(uid);
-        }
-    }
-
-    private void processDeviceDetailsBatch(List<DeviceDetails> deviceDetails) {
-        try {
-            deviceDetailsDao.saveDeviceDetailsBatch(deviceDetails);
-        } catch (RuntimeException e) {
-            logger.error("Batch device details save failed", e);
-            logger.info("Processing device details individually");
-
-            for (DeviceDetails device : deviceDetails) {
-                try {
-                    deviceDetailsDao.saveDeviceDetails(device);
-                } catch (RuntimeException ex) {
-                    logger.error("Failed to save device details: {}", device.getUid(), ex);
-                }
-            }
-        }
-    }
-
-    /**
-     * Prepare push notification data object.
-     *
-     * @param context             String value contains context-name
-     * @param notificationData    Instance of NotificationData
-     * @param notificationRequest Instance of NotificationRequest
-     * @return Object of PushNotificationData
-     */
-    private PushNotificationData preparePushNotificationData(String context, NotificationData notificationData, NotificationRequest notificationRequest) {
-        PushNotificationData pushNotificationData = new PushNotificationData();
-        pushNotificationData.setUid(Integer.parseInt(notificationData.getUid()));
-        pushNotificationData.setContext(context);
-        pushNotificationData.setMessageCount(Integer.parseInt(notificationData.getMessageCount()));
-        pushNotificationData.setMessageType(notificationData.getMessageType());
-        pushNotificationData.setCreatedTsUTC(DateUtil.getCurrentDateTimeInUTC(DateUtil.MYSQL_DATE_TIME_FORMAT));
-        pushNotificationData.setPracticeIp(StringUtils.trimToEmpty(notificationRequest.getHostAddress()));
-        pushNotificationData.setHostName(StringUtils.trimToEmpty(notificationRequest.getHostName()));
-        pushNotificationData.setTomcatPath(StringUtils.trimToEmpty(notificationRequest.getTomcatHome()));
-        return pushNotificationData;
-    }
-
-    /**
-     * Prepare device details object.
-     * @param context          String value contains context-name
-     * @param notificationData Instance of NotificationData
-     * @return Object of DeviceDetails
-     */
-    private DeviceDetails prepareDeviceDetails(String context, NotificationData notificationData) {
-        DeviceDetails deviceDetails = deviceDetailsDao.findByUidAndContext(Integer.parseInt(notificationData.getUid()), context);
-        if (StringUtils.isBlank(deviceDetails.getContext())) {
-            deviceDetails.setUid(Integer.parseInt(notificationData.getUid()));
-            deviceDetails.setContext(context);
-        }
-        deviceDetails.setDevicePlatform(notificationData.getDevicePlatform());
-        deviceDetails.setDeviceToken(notificationData.getDeviceToken());
-        return deviceDetails;
-    }
-
-    /**
-     * Prepare notification success response.
-     *
-     * @param lstFailedUid Instance of List
-     * @return Instance of NotificationDataResponse
-     */
-    private NotificationDataResponse prepareNotificationSuccessResponse(List<Integer> lstFailedUid) {
-        NotificationRes notificationRes = new NotificationRes();
-        notificationRes.setFailedUidList(lstFailedUid);
-        NotificationDataResponse response = new NotificationDataResponse();
-        response.setStatus(Status.SUCCESS.getStatusValue());
-        response.setResponse(notificationRes);
-        return response;
-    }
-
-    /**
-     * Prepare notification failed response.
-     *
-     * @param errorMessage String value contains error-message
-     * @return Instance of NotificationDataResponse
-     */
-    private NotificationDataResponse prepareNotificationFailedResponse(String errorMessage) {
-        NotificationDataResponse response = new NotificationDataResponse();
-        response.setStatus(Status.FAILED.getStatusValue());
-        response.setErrorMessage(errorMessage);
-        return response;
-    }
