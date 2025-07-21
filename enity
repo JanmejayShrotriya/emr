@@ -1,0 +1,83 @@
+
+@Transactional
+public void savePushNotificationsInBatch(List<PushNotificationData> notifications,
+                                         List<Integer> uidList,
+                                         List<Integer> failedUidList) {
+    final int BATCH_SIZE = 50;
+
+    for (int i = 0; i < notifications.size(); i++) {
+        try {
+            PushNotificationData notification = notifications.get(i);
+            entityManager.persist(notification);
+
+            // Flush & clear at batch intervals
+            if ((i + 1) % BATCH_SIZE == 0) {
+                entityManager.flush();
+                entityManager.clear();
+            }
+        } catch (Exception ex) {
+            // Add failed UID to tracking list
+            Integer failedUid = (uidList != null && uidList.size() > i) ? uidList.get(i) : null;
+            if (failedUid != null) failedUidList.add(failedUid);
+
+            // Log error
+            log.error("Failed to persist PushNotificationData at index " + i, ex);
+        }
+    }
+
+    // Final flush for remaining records
+    try {
+        entityManager.flush();
+        entityManager.clear();
+    } catch (Exception ex) {
+        log.error("Final flush failed after batch insert.", ex);
+    }
+}
+
+
+
+
+
+private List<Integer> insertNotificationDetails(List<NotificationData> notificationDataList,
+                                                String mobileContextRequest,
+                                                NotificationRequest notificationRequest) {
+    List<PushNotificationData> pushNotificationDataList = new ArrayList<>();
+    List<DeviceDetails> deviceDetailsList = new ArrayList<>();
+    List<Integer> uidList = new ArrayList<>();
+    List<Integer> failedUidList = new ArrayList<>();
+
+    for (NotificationData data : notificationDataList) {
+        PushNotificationData pushData = preparePushNotificationData(mobileContextRequest, notificationRequest, data);
+        DeviceDetails device = prepareDeviceDetails(mobileContextRequest, notificationRequest, data);
+
+        pushNotificationDataList.add(pushData);
+        deviceDetailsList.add(device);
+        uidList.add(data.getUid());
+    }
+
+    if (!pushNotificationDataList.isEmpty()) {
+        savePushNotificationsInBatch(pushNotificationDataList, uidList, failedUidList);
+    }
+
+    return failedUidList;
+}
+
+
+
+
+
+
+
+@Transactional
+public void saveDeviceDetailsInBatch(List<DeviceDetails> devices) {
+    final int BATCH_SIZE = 50;
+    for (int i = 0; i < devices.size(); i++) {
+        entityManager.persist(devices.get(i));
+        if ((i + 1) % BATCH_SIZE == 0) {
+            entityManager.flush();
+            entityManager.clear();
+        }
+    }
+    entityManager.flush();
+    entityManager.clear();
+}
